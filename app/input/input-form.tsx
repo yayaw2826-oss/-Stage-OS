@@ -318,6 +318,49 @@ export function InputForm() {
   const progressValue = (completedCount / 4) * 100;
 
   const handleSubmit = () => {
+    // 把所有表单字段打包成 4 个维度的对象
+    const payload = {
+      content: {
+        playName,
+        playType,
+        copyright,
+        adaptSource,
+        importOrigin,
+        mood,
+        highlights,
+        backingEntries,
+        benchmark: {
+          title: benchmarkTitle,
+          venue: benchmarkVenue,
+          version: benchmarkVersion,
+          similarity: benchmarkSimilarity,
+        },
+      },
+      show: {
+        city,
+        venue,
+        showTime,
+        showCount,
+        seatCount,
+        ticketTiers,
+      },
+      audience: {
+        targetAudience: audience,
+        priceTier,
+        decisionPath,
+      },
+      business: {
+        priority,
+        marketingBudget,
+        customBudget,
+        avoidDirections,
+      },
+    };
+
+    // 清掉上次生成的结果,这样 /result 会重新调 API 生成新方案
+    sessionStorage.removeItem("stage-os-result");
+    // 把表单数据塞进 sessionStorage,/result 页面会读出来当请求体
+    sessionStorage.setItem("stage-os-form-data", JSON.stringify(payload));
     router.push("/result");
   };
 
