@@ -1,9 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { SYSTEM_PROMPT } from "@/lib/system-prompt";
 
-// Vercel Hobby 单函数 60s 上限。流式响应在数据持续流动期间不算超时,
-// 但首字节(TTFB)还是会被记入。
-export const maxDuration = 60;
+// Vercel Pro 计划单函数最长 300 秒(5 分钟),够 Opus 4.7 + adaptive thinking 跑完。
+// 用 Hobby 计划的话此参数最高被允许到 60。
+export const maxDuration = 300;
 
 const client = new Anthropic();
 
@@ -29,11 +29,16 @@ ${JSON.stringify(formData, null, 2)}
   let stream: ReturnType<typeof client.messages.stream>;
   try {
     stream = client.messages.stream({
-      model: "claude-sonnet-4-6",
-      // 6000 token ≈ 4000-4500 字方案。比之前的 4500 大,因为流式不再硬卡 60s。
-      max_tokens: 6000,
-      thinking: { type: "disabled" },
-      output_config: { effort: "medium" },
+      // Opus 4.7 是目前最聪明的 Claude,文化/营销策划任务首选。
+      // 在 5 分钟时限内,配合 adaptive thinking,质量比 Sonnet 4.6 上一个档次。
+      model: "claude-opus-4-7",
+      // 10000 token ≈ 6500-7500 字完整方案。Opus 4.7 上限是 128K,这里给个稳妥值。
+      max_tokens: 10000,
+      // adaptive thinking:让 Opus 自己决定要不要深度思考、思考多少
+      thinking: { type: "adaptive" },
+      // effort high:对智能要求高的任务的最低推荐(skill 原话)
+      output_config: { effort: "high" },
+      // 把超长的 system prompt 缓存起来,第二次调用便宜 ~90%
       cache_control: { type: "ephemeral" },
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: userMessage }],

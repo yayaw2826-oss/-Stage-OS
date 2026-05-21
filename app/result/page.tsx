@@ -727,11 +727,11 @@ export default function ResultPage() {
             </div>
 
             <p className="mt-8 text-sm text-ink-mute">
-              通常{" "}
+              Opus 4.7 通常{" "}
               <span className="font-serif italic text-base text-ink-soft">
-                20-40
+                1-3
               </span>{" "}
-              秒 · 不会保存你的剧目信息
+              分钟 · 几秒后内容会开始流式出现 · 不会保存你的剧目信息
             </p>
           </div>
         )}
