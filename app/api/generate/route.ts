@@ -28,8 +28,10 @@ ${JSON.stringify(formData, null, 2)}
     const response = await client.messages.create({
       // Sonnet 4.6 比 Opus 4.7 快 2-3 倍,中文文案质量不输 Opus
       model: "claude-sonnet-4-6",
-      // 8000 token 够写一份 4000-6000 字的完整方案,避免 SDK timeout
-      max_tokens: 8000,
+      // 4500 token ≈ 3000-3500 字中文方案。
+      // 关键约束:Vercel Hobby 计划单函数最多 60s,8000 token 会撞这个墙。
+      // 真正想要长输出 + 不超时,下一步要改成流式(streaming)。
+      max_tokens: 4500,
       // 关掉 thinking。对结构化文案生成,Sonnet 4.6 不思考反而更快、质量也够
       thinking: { type: "disabled" },
       // medium effort 是速度和质量的甜蜜点
