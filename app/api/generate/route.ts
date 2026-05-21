@@ -1,83 +1,50 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { SYSTEM_PROMPT } from "@/lib/system-prompt";
 
-// 让这个 Route Handler 在 Vercel 上最多跑 60 秒(Vercel Hobby 计划的上限)。
-// Opus 4.7 + adaptive thinking 生成一份营销方案大约 30-60 秒。
+// Vercel Hobby 单函数 60s 上限。流式响应在数据持续流动期间不算超时,
+// 但首字节(TTFB)还是会被记入。
 export const maxDuration = 60;
 
-// 创建 Claude 客户端。它会自动从环境变量 ANTHROPIC_API_KEY 读取 key。
 const client = new Anthropic();
 
 export async function POST(request: Request) {
+  // 1. 解析表单数据
+  let formData: unknown;
   try {
-    // 1. 解析用户表单数据
-    const formData = await request.json();
+    formData = await request.json();
+  } catch {
+    return Response.json(
+      { error: "请求体不是合法的 JSON" },
+      { status: 400 }
+    );
+  }
 
-    // 2. 把用户输入打包成一段文本喂给 Claude
-    const userMessage = `请基于以下 4 个维度的输入,为我生成一份完整的营销方案:
+  const userMessage = `请基于以下 4 个维度的输入,为我生成一份完整的营销方案:
 
 \`\`\`json
 ${JSON.stringify(formData, null, 2)}
 \`\`\``;
 
-    // 3. 调用 Claude API
-    //    - 模型:claude-opus-4-7(目前最聪明的 Claude)
-    //    - adaptive thinking:让模型自己决定要思考多深
-    //    - effort: high:用于"对智能要求高"的任务
-    //    - cache_control:把 system prompt 缓存起来,下次调用便宜 ~90%
-    const response = await client.messages.create({
-      // Sonnet 4.6 比 Opus 4.7 快 2-3 倍,中文文案质量不输 Opus
+  // 2. 启动 Claude 流式生成。这里不 await,只是初始化迭代器。
+  let stream: ReturnType<typeof client.messages.stream>;
+  try {
+    stream = client.messages.stream({
       model: "claude-sonnet-4-6",
-      // 4500 token ≈ 3000-3500 字中文方案。
-      // 关键约束:Vercel Hobby 计划单函数最多 60s,8000 token 会撞这个墙。
-      // 真正想要长输出 + 不超时,下一步要改成流式(streaming)。
-      max_tokens: 4500,
-      // 关掉 thinking。对结构化文案生成,Sonnet 4.6 不思考反而更快、质量也够
+      // 6000 token ≈ 4000-4500 字方案。比之前的 4500 大,因为流式不再硬卡 60s。
+      max_tokens: 6000,
       thinking: { type: "disabled" },
-      // medium effort 是速度和质量的甜蜜点
       output_config: { effort: "medium" },
       cache_control: { type: "ephemeral" },
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: userMessage }],
     });
-
-    // 4. 从响应里提取 markdown 文本
-    //    Claude 返回的 content 是一个数组,里面可能有 thinking 块和 text 块
-    //    我们只要 text 块
-    const markdown = response.content
-      .filter((block) => block.type === "text")
-      .map((block) => (block as { type: "text"; text: string }).text)
-      .join("\n");
-
-    if (!markdown) {
-      return Response.json(
-        { error: "Claude 没有返回内容,请稍后重试" },
-        { status: 500 }
-      );
-    }
-
-    return Response.json({
-      markdown,
-      usage: {
-        input_tokens: response.usage.input_tokens,
-        output_tokens: response.usage.output_tokens,
-        cache_read_input_tokens: response.usage.cache_read_input_tokens,
-      },
-    });
   } catch (error) {
-    // 把错误信息整理一下返给前端
-    console.error("[/api/generate] error:", error);
-
+    // 流还没开,这里捕获的是请求构造层错误(认证、参数等)
+    console.error("[/api/generate] init error:", error);
     if (error instanceof Anthropic.AuthenticationError) {
       return Response.json(
-        { error: "API key 无效或未设置,请检查 .env.local 或 Vercel 环境变量" },
+        { error: "API key 无效或未设置" },
         { status: 500 }
-      );
-    }
-    if (error instanceof Anthropic.RateLimitError) {
-      return Response.json(
-        { error: "API 调用太频繁,请等一会再试" },
-        { status: 429 }
       );
     }
     if (error instanceof Anthropic.APIError) {
@@ -86,10 +53,52 @@ ${JSON.stringify(formData, null, 2)}
         { status: error.status ?? 500 }
       );
     }
-
     return Response.json(
       { error: error instanceof Error ? error.message : "未知错误" },
       { status: 500 }
     );
   }
+
+  // 3. 把 Anthropic 的 SDK 事件流,转换成纯文本字节流,推给客户端
+  const encoder = new TextEncoder();
+  const readableStream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        for await (const event of stream) {
+          // 只关心 text_delta 事件,把 token 文字直接 enqueue 出去
+          if (
+            event.type === "content_block_delta" &&
+            event.delta.type === "text_delta"
+          ) {
+            controller.enqueue(encoder.encode(event.delta.text));
+          }
+        }
+        controller.close();
+      } catch (error) {
+        console.error("[stream] error during iteration:", error);
+        // 流内部错误:能写就写一条提示文本,然后 error 终止
+        try {
+          controller.enqueue(
+            encoder.encode(
+              `\n\n---\n\n**生成中断**:${
+                error instanceof Error ? error.message : "未知错误"
+              }`
+            )
+          );
+        } catch {
+          /* ignore */
+        }
+        controller.error(error);
+      }
+    },
+  });
+
+  return new Response(readableStream, {
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      // 阻止任何中间代理(nginx/cloudflare 之类)做缓冲,确保 chunk 立刻发到客户端
+      "X-Accel-Buffering": "no",
+    },
+  });
 }

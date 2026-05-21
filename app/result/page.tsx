@@ -71,7 +71,7 @@ type TabId = (typeof TABS)[number]["id"];
    类型
    ============================================================ */
 
-type Status = "idle" | "loading" | "ready" | "error";
+type Status = "idle" | "loading" | "streaming" | "ready" | "error";
 
 type ParsedSection = { title: string; content: string; tabId: TabId };
 
@@ -200,9 +200,11 @@ function BrandArc({ className }: { className?: string }) {
 function ResultHero({
   formData,
   heroMarkdown,
+  streaming = false,
 }: {
   formData: FormDataShape | null;
   heroMarkdown: string;
+  streaming?: boolean;
 }) {
   const playName = formData?.content?.playName || "你的剧目";
   const city = formData?.show?.city || "";
@@ -233,14 +235,25 @@ function ResultHero({
         {/* 品牌弧形装饰,右上角 */}
         <BrandArc className="pointer-events-none absolute -right-4 -top-4 h-48 w-48 opacity-90 sm:h-56 sm:w-56" />
 
-        {/* eyebrow chip */}
-        <div className="relative inline-flex items-center gap-2 rounded-full bg-pink-mist px-4 py-1.5 text-xs font-medium tracking-wider text-berry-deep">
-          {eyebrowParts.map((part, i) => (
-            <span key={i} className="flex items-center gap-2">
-              {i > 0 && <span className="text-berry-light">·</span>}
-              <span>{part}</span>
-            </span>
-          ))}
+        {/* eyebrow chip(+ 流式中显示「实时生成中」状态点)*/}
+        <div className="relative flex flex-wrap items-center gap-3">
+          <div className="inline-flex items-center gap-2 rounded-full bg-pink-mist px-4 py-1.5 text-xs font-medium tracking-wider text-berry-deep">
+            {eyebrowParts.map((part, i) => (
+              <span key={i} className="flex items-center gap-2">
+                {i > 0 && <span className="text-berry-light">·</span>}
+                <span>{part}</span>
+              </span>
+            ))}
+          </div>
+          {streaming && (
+            <div className="inline-flex items-center gap-2 rounded-full border border-accent-teal/40 bg-white px-3 py-1 text-xs font-medium text-accent-teal">
+              <span className="relative inline-flex h-2 w-2">
+                <span className="absolute inset-0 animate-ping rounded-full bg-accent-teal opacity-60" />
+                <span className="relative inline-block h-2 w-2 rounded-full bg-accent-teal" />
+              </span>
+              实时生成中
+            </div>
+          )}
         </div>
 
         {/* 主标题:剧名 · 城市 */}
@@ -385,9 +398,11 @@ function TabStrip({
 function TabContent({
   sections,
   activeTab,
+  streaming = false,
 }: {
   sections: ParsedSection[];
   activeTab: TabId;
+  streaming?: boolean;
 }) {
   const matched = sections.filter((s) => s.tabId === activeTab);
   const tabMeta = TABS.find((t) => t.id === activeTab)!;
@@ -395,17 +410,35 @@ function TabContent({
   if (matched.length === 0) {
     return (
       <div className="rounded-2xl border border-stage-border bg-white p-10 text-center">
-        <span
-          className="inline-block h-2 w-2 rounded-full"
-          style={{ backgroundColor: tabMeta.color }}
-        />
-        <p className="mt-4 font-serif text-xl font-medium text-berry-deep">
-          这一栏暂时空着
-        </p>
-        <p className="mt-2 text-sm text-ink-mute">
-          AI 这次没有为「{tabMeta.label}」生成专属内容。
-          可以试试重新生成,或在其他 Tab 里找相关内容。
-        </p>
+        {streaming ? (
+          <>
+            <Loader2
+              className="mx-auto h-6 w-6 animate-spin"
+              style={{ color: tabMeta.color }}
+            />
+            <p className="mt-4 font-serif text-xl font-medium text-berry-deep">
+              AI 正在生成「{tabMeta.label}」
+            </p>
+            <p className="mt-2 text-sm text-ink-mute">
+              方案是按顺序生成的,这一栏的内容很快会出现。
+              你可以先点其他已经有圆点亮起来的 tab 看已生成的部分。
+            </p>
+          </>
+        ) : (
+          <>
+            <span
+              className="inline-block h-2 w-2 rounded-full"
+              style={{ backgroundColor: tabMeta.color }}
+            />
+            <p className="mt-4 font-serif text-xl font-medium text-berry-deep">
+              这一栏暂时空着
+            </p>
+            <p className="mt-2 text-sm text-ink-mute">
+              AI 这次没有为「{tabMeta.label}」生成专属内容。
+              可以试试重新生成,或在其他 Tab 里找相关内容。
+            </p>
+          </>
+        )}
       </div>
     );
   }
@@ -483,24 +516,71 @@ export default function ResultPage() {
 
     setStatus("loading");
 
-    fetch("/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: fd,
-    })
-      .then(async (res) => {
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || `请求失败 (HTTP ${res.status})`);
+    // 流式拉取 /api/generate。第一个 chunk 一到 → 切到 streaming 状态展示部分内容。
+    // 流结束 → ready 状态;中途断 + 已有内容 → 保留已收 + 提示;
+    // 还没拿到内容就断 → error
+    (async () => {
+      let acc = "";
+      try {
+        const response = await fetch("/api/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: fd,
+        });
+
+        // 服务器主动返回错误(JSON),通常是认证 / 参数问题
+        if (!response.ok) {
+          const errData = await response
+            .json()
+            .catch(() => ({ error: `请求失败 (HTTP ${response.status})` }));
+          throw new Error(
+            errData.error || `请求失败 (HTTP ${response.status})`
+          );
         }
-        sessionStorage.setItem("stage-os-result", data.markdown);
-        setMarkdown(data.markdown);
+
+        if (!response.body) {
+          throw new Error("服务器没有返回响应流");
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let firstChunk = true;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            acc += decoder.decode(value, { stream: true });
+            if (firstChunk) {
+              setStatus("streaming");
+              firstChunk = false;
+            }
+            setMarkdown(acc);
+          }
+        }
+
+        // 把残留字节 flush 出来
+        acc += decoder.decode();
+
+        sessionStorage.setItem("stage-os-result", acc);
+        setMarkdown(acc);
         setStatus("ready");
-      })
-      .catch((err) => {
-        setErrorMsg(err instanceof Error ? err.message : "生成失败,请重试");
-        setStatus("error");
-      });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "生成失败,请重试";
+        if (acc.length > 200) {
+          // 已经收到不少内容才断:保留 + 加一行提示,仍展示
+          const final =
+            acc +
+            `\n\n---\n\n⚠️ **生成中断**:${msg}\n\n方案可能不完整,可以返回输入页重新生成。`;
+          setMarkdown(final);
+          sessionStorage.setItem("stage-os-result", final);
+          setStatus("ready");
+        } else {
+          setErrorMsg(msg);
+          setStatus("error");
+        }
+      }
+    })();
   }, []);
 
   /* === Loading 文案 4 秒切一次 === */
@@ -536,12 +616,21 @@ export default function ResultPage() {
     return map;
   }, [parsed]);
 
-  /* === ready 时,默认选第一个有内容的 tab === */
+  /* === 流式生成中或就绪时,默认选第一个有内容的 tab === */
+  // 用 ref 记住用户有没有手动点过 tab,避免流式过程中持续覆盖用户选择
+  const userPickedTab = useRef(false);
   useEffect(() => {
-    if (status !== "ready" || !parsed) return;
+    if (status !== "streaming" && status !== "ready") return;
+    if (userPickedTab.current) return;
+    if (!parsed) return;
     const firstWithContent = TABS.find((t) => availableCount[t.id] > 0);
     if (firstWithContent) setActiveTab(firstWithContent.id as TabId);
   }, [status, parsed, availableCount]);
+
+  const handleTabChange = (id: TabId) => {
+    userPickedTab.current = true;
+    setActiveTab(id);
+  };
 
   return (
     <div className="min-h-screen bg-stage-bg">
@@ -670,41 +759,51 @@ export default function ResultPage() {
         )}
       </main>
 
-      {/* ready 状态下的整页结构:Hero -> TabStrip -> TabContent */}
-      {status === "ready" && parsed && (
+      {/* streaming(流式中)和 ready(完成)都展示 Hero + TabStrip + TabContent */}
+      {(status === "streaming" || status === "ready") && parsed && (
         <>
-          <ResultHero formData={formData} heroMarkdown={parsed.hero} />
+          <ResultHero
+            formData={formData}
+            heroMarkdown={parsed.hero}
+            streaming={status === "streaming"}
+          />
 
           <TabStrip
             active={activeTab}
-            onChange={setActiveTab}
+            onChange={handleTabChange}
             availableCount={availableCount}
           />
 
           <section className="mx-auto max-w-6xl px-5 py-8 sm:px-8 sm:py-10">
-            <TabContent sections={parsed.sections} activeTab={activeTab} />
+            <TabContent
+              sections={parsed.sections}
+              activeTab={activeTab}
+              streaming={status === "streaming"}
+            />
 
-            {/* 底部按钮 */}
-            <div className="mt-10 flex flex-wrap justify-center gap-4">
-              <Link
-                href="/input"
-                className={cn(
-                  buttonVariants({ variant: "outline", size: "lg" }),
-                  "h-12 rounded-full border-berry px-6 text-berry hover:bg-pink-mist"
-                )}
-              >
-                返回修改信息
-              </Link>
-              <Link
-                href="/"
-                className={cn(
-                  buttonVariants({ variant: "default", size: "lg" }),
-                  "h-12 rounded-full bg-berry px-6 hover:bg-berry-deep"
-                )}
-              >
-                回到首页
-              </Link>
-            </div>
+            {/* 底部按钮:流式中不显示,避免用户中途跳走 */}
+            {status === "ready" && (
+              <div className="mt-10 flex flex-wrap justify-center gap-4">
+                <Link
+                  href="/input"
+                  className={cn(
+                    buttonVariants({ variant: "outline", size: "lg" }),
+                    "h-12 rounded-full border-berry px-6 text-berry hover:bg-pink-mist"
+                  )}
+                >
+                  返回修改信息
+                </Link>
+                <Link
+                  href="/"
+                  className={cn(
+                    buttonVariants({ variant: "default", size: "lg" }),
+                    "h-12 rounded-full bg-berry px-6 hover:bg-berry-deep"
+                  )}
+                >
+                  回到首页
+                </Link>
+              </div>
+            )}
           </section>
         </>
       )}
