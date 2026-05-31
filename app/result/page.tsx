@@ -8,6 +8,12 @@ import { Loader2 } from "lucide-react";
 import { SiteHeader } from "@/components/site-header";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import {
+  generateId,
+  getHistoryEntry,
+  saveHistoryEntry,
+  type HistoryStatus,
+} from "@/lib/history";
 
 /* ============================================================
    常量定义
@@ -484,51 +490,93 @@ export default function ResultPage() {
   const [formData, setFormData] = useState<FormDataShape | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("audience");
   const initialized = useRef(false);
+  // 当前正在生成 / 已加载的历史条目 ID。生成过程中边写边存,闪退保护
+  const historyId = useRef<string | null>(null);
 
-  /* === 初始化:读 sessionStorage,决定状态 === */
+  /* === 初始化:URL ?id= → 历史 → 表单数据 → 调 API === */
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
 
-    // 读表单数据(用于 hero 区域的剧名/城市/场地)
-    const fd = sessionStorage.getItem("stage-os-form-data");
-    if (fd) {
+    // 帮助函数:把当前进度写进历史(已存在则保留原 createdAt)
+    const saveToHistory = (
+      id: string,
+      fd: FormDataShape | null,
+      md: string,
+      status: HistoryStatus
+    ) => {
+      const existing = getHistoryEntry(id);
+      saveHistoryEntry({
+        id,
+        playName: fd?.content?.playName?.trim() || "未命名作品",
+        city: fd?.show?.city || undefined,
+        venue: fd?.show?.venue || undefined,
+        createdAt: existing?.createdAt ?? Date.now(),
+        updatedAt: Date.now(),
+        formData: fd,
+        markdown: md,
+        status,
+      });
+    };
+
+    // 优先级 1:URL ?id= → 直接加载历史
+    const params = new URLSearchParams(window.location.search);
+    const urlId = params.get("id");
+    if (urlId) {
+      const entry = getHistoryEntry(urlId);
+      if (entry) {
+        historyId.current = urlId;
+        setFormData((entry.formData as FormDataShape | null) ?? null);
+        setMarkdown(entry.markdown);
+        setStatus("ready");
+        return;
+      }
+      // ID 在 URL 里但本地找不到 → 可能是刚清缓存,或者别人发的链接
+      setErrorMsg("没找到这个历史方案——可能已被删除,或者方案是在另一台电脑生成的");
+      setStatus("error");
+      return;
+    }
+
+    // 优先级 2:sessionStorage 表单数据 → 启动生成
+    const fdRaw = sessionStorage.getItem("stage-os-form-data");
+    let fdParsed: FormDataShape | null = null;
+    if (fdRaw) {
       try {
-        setFormData(JSON.parse(fd));
+        fdParsed = JSON.parse(fdRaw);
+        setFormData(fdParsed);
       } catch {
         /* ignore */
       }
     }
 
-    // 优先级 1:已有缓存结果
+    // 优先级 3:旧版兜底——sessionStorage 已有 result(老用户场景)
     const cached = sessionStorage.getItem("stage-os-result");
-    if (cached) {
+    if (cached && !fdRaw) {
       setMarkdown(cached);
       setStatus("ready");
       return;
     }
 
-    // 优先级 2:有表单数据,开始调 API
-    if (!fd) {
+    if (!fdRaw) {
       setStatus("idle");
       return;
     }
 
     setStatus("loading");
 
-    // 流式拉取 /api/generate。第一个 chunk 一到 → 切到 streaming 状态展示部分内容。
-    // 流结束 → ready 状态;中途断 + 已有内容 → 保留已收 + 提示;
-    // 还没拿到内容就断 → error
+    // 流式拉取 /api/generate,边收边写历史。
     (async () => {
       let acc = "";
+      let newId: string | null = null;
+      let lastSavedLen = 0;
+
       try {
         const response = await fetch("/api/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: fd,
+          body: fdRaw,
         });
 
-        // 服务器主动返回错误(JSON),通常是认证 / 参数问题
         if (!response.ok) {
           const errData = await response
             .json()
@@ -551,31 +599,52 @@ export default function ResultPage() {
           if (done) break;
           if (value) {
             acc += decoder.decode(value, { stream: true });
+
             if (firstChunk) {
+              // 第一字节:创建历史条目,把 URL 同步成 /result?id=xxx
+              // 这样刷新页面不会重新生成(直接走"优先级 1"加载历史)
+              newId = generateId();
+              historyId.current = newId;
+              saveToHistory(newId, fdParsed, acc, "partial");
+              window.history.replaceState(null, "", `/result?id=${newId}`);
               setStatus("streaming");
               firstChunk = false;
+              lastSavedLen = acc.length;
+            } else if (newId && acc.length - lastSavedLen > 1500) {
+              // 闪退保护:每多收 1500 字写一次历史
+              saveToHistory(newId, fdParsed, acc, "partial");
+              lastSavedLen = acc.length;
             }
+
             setMarkdown(acc);
           }
         }
 
-        // 把残留字节 flush 出来
         acc += decoder.decode();
 
+        // 完成:标记 complete,持久化最终版本
+        if (newId) {
+          saveToHistory(newId, fdParsed, acc, "complete");
+        }
         sessionStorage.setItem("stage-os-result", acc);
         setMarkdown(acc);
         setStatus("ready");
       } catch (err) {
         const msg = err instanceof Error ? err.message : "生成失败,请重试";
+
         if (acc.length > 200) {
-          // 已经收到不少内容才断:保留 + 加一行提示,仍展示
+          // 已经收到不少内容才断:保留 + 加提示,仍展示;同时存为 interrupted
           const final =
             acc +
-            `\n\n---\n\n⚠️ **生成中断**:${msg}\n\n方案可能不完整,可以返回输入页重新生成。`;
+            `\n\n---\n\n⚠️ **生成中断**:${msg}\n\n方案可能不完整,可以返回输入页重新生成,或在 /history 找回当前进度。`;
+          if (newId) {
+            saveToHistory(newId, fdParsed, final, "interrupted");
+          }
           setMarkdown(final);
           sessionStorage.setItem("stage-os-result", final);
           setStatus("ready");
         } else {
+          // 没收到内容就断:直接错误页
           setErrorMsg(msg);
           setStatus("error");
         }

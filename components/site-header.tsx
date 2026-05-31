@@ -1,7 +1,16 @@
+"use client";
+
 import Image from "next/image";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 
-const navItems = ["产品", "案例库", "方法论", "数据来源"];
+const navItems: { label: string; href: string }[] = [
+  { label: "产品", href: "/" },
+  { label: "历史", href: "/history" },
+  { label: "案例库", href: "#" },
+  { label: "方法论", href: "#" },
+  { label: "数据来源", href: "#" },
+];
 
 type SiteHeaderProps = {
   ctaHref?: string;
@@ -12,6 +21,15 @@ export function SiteHeader({
   ctaHref = "/input",
   ctaLabel = "立即生成方案",
 }: SiteHeaderProps) {
+  const pathname = usePathname();
+
+  // 判断某个 nav 项是否处于活跃状态
+  const isActive = (href: string) => {
+    if (href === "#") return false;
+    if (href === "/") return pathname === "/";
+    return pathname?.startsWith(href) ?? false;
+  };
+
   return (
     <header className="sticky top-0 z-50 bg-berry text-white shadow-md shadow-berry/20">
       <div className="mx-auto flex h-[68px] max-w-6xl items-center gap-4 px-5 sm:px-8">
@@ -34,20 +52,23 @@ export function SiteHeader({
           Promo Studio
         </span>
 
-        <nav className="ml-auto hidden items-center gap-8 text-sm text-white/85 md:flex">
-          {navItems.map((item, i) => (
-            <Link
-              key={item}
-              href={item === "产品" ? "/" : "#"}
-              className={
-                i === 0
-                  ? "relative font-medium text-white after:absolute after:-bottom-6 after:left-0 after:right-0 after:h-0.5 after:bg-pink-pale"
-                  : "hover:text-white"
-              }
-            >
-              {item}
-            </Link>
-          ))}
+        <nav className="ml-auto hidden items-center gap-7 text-sm text-white/85 md:flex">
+          {navItems.map(({ label, href }) => {
+            const active = isActive(href);
+            return (
+              <Link
+                key={label}
+                href={href}
+                className={
+                  active
+                    ? "relative font-medium text-white after:absolute after:-bottom-6 after:left-0 after:right-0 after:h-0.5 after:bg-pink-pale"
+                    : "transition hover:text-white"
+                }
+              >
+                {label}
+              </Link>
+            );
+          })}
         </nav>
 
         <Link
