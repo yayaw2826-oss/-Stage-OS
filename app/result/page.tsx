@@ -19,7 +19,7 @@ import {
    常量定义
    ============================================================ */
 
-// Loading 4 阶段配色:对应 Stage OS 品牌 4 个点缀色 + 3 大方法论
+// Loading 5 阶段配色:对应 Stage OS 品牌 5 个点缀色 + 5 个 section
 const LOADING_STEPS: ReadonlyArray<{
   text: string;
   method: string;
@@ -27,8 +27,9 @@ const LOADING_STEPS: ReadonlyArray<{
 }> = [
   { text: "正在分析受众...", method: "戏剧观众七问", color: "var(--accent-yellow)" },
   { text: "正在匹配渠道...", method: "ABC 三层模型", color: "var(--accent-teal)" },
-  { text: "正在生成内容...", method: "小红书 5 篇", color: "var(--accent-coral)" },
-  { text: "正在编排时间表...", method: "T-60 倒计时引擎", color: "var(--ink)" },
+  { text: "正在打磨文案...", method: "5 条 slogan · N 篇小红书 · 媒体通稿", color: "var(--accent-coral)" },
+  { text: "正在生成视觉...", method: "色板 · 海报构图 · 宣传片风格", color: "var(--berry-light)" },
+  { text: "正在编排时间表...", method: "T-N 倒计时引擎(必须基于前 4 段实际内容)", color: "var(--ink)" },
 ];
 
 // 六维 Tab 定义。color = 品牌点缀色;keywords 用于把 AI 生成的 H2 章节智能归类到对应 tab。
@@ -47,11 +48,11 @@ const TABS = [
   },
   {
     id: "content",
-    label: "营销内容包",
+    label: "内容包",
     color: "var(--accent-coral)",
     keywords: [
-      "营销内容包",
       "内容包",
+      "营销内容包",
       "小红书",
       "内容",
       "种草",
@@ -59,22 +60,41 @@ const TABS = [
       "媒体通稿",
       "通稿",
       "媒体",
+      "slogan",
+      "宣传语",
+      "话术",
     ],
   },
   {
     id: "visual",
     label: "视觉语言建议",
     color: "var(--berry-light)",
-    keywords: ["视觉语言", "视觉指南", "视觉调性", "视觉", "配色", "封面", "色板", "美学"],
+    keywords: [
+      "视觉语言",
+      "视觉指南",
+      "视觉调性",
+      "视觉",
+      "配色",
+      "色板",
+      "封面",
+      "美学",
+      "宣传片",
+      "海报",
+    ],
   },
   {
     id: "calendar",
-    label: "60 天日历",
+    label: "营销排期日历",
     color: "var(--ink)",
     keywords: [
+      "营销排期日历",
+      "营销排期",
+      "排期日历",
       "60 天",
       "日历",
       "T-60",
+      "T-30",
+      "T-14",
       "排期",
       "倒计时",
       "时间表",
@@ -84,12 +104,6 @@ const TABS = [
       "周次",
       "营销节奏",
     ],
-  },
-  {
-    id: "data",
-    label: "数据回收",
-    color: "var(--berry-deep)",
-    keywords: ["数据回收", "看板", "复盘"],
   },
 ] as const;
 
@@ -698,7 +712,6 @@ export default function ResultPage() {
       content: 0,
       visual: 0,
       calendar: 0,
-      data: 0,
     };
     if (parsed) {
       parsed.sections.forEach((s) => {
