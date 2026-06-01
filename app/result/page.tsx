@@ -47,9 +47,25 @@ const TABS = [
   },
   {
     id: "content",
-    label: "小红书 5 篇",
+    label: "营销内容包",
     color: "var(--accent-coral)",
-    keywords: ["内容", "小红书", "种草", "文案包"],
+    keywords: [
+      "营销内容包",
+      "内容包",
+      "小红书",
+      "内容",
+      "种草",
+      "文案包",
+      "媒体通稿",
+      "通稿",
+      "媒体",
+    ],
+  },
+  {
+    id: "visual",
+    label: "视觉语言建议",
+    color: "var(--berry-light)",
+    keywords: ["视觉语言", "视觉指南", "视觉调性", "视觉", "配色", "封面", "色板", "美学"],
   },
   {
     id: "calendar",
@@ -74,12 +90,6 @@ const TABS = [
     label: "数据回收",
     color: "var(--berry-deep)",
     keywords: ["数据回收", "看板", "复盘"],
-  },
-  {
-    id: "more",
-    label: "更多平台",
-    color: "var(--ink-mute)",
-    keywords: ["媒体通稿", "通稿", "媒体", "其他"],
   },
 ] as const;
 
@@ -117,7 +127,8 @@ function matchTabByTitle(title: string): TabId {
       if (title.includes(keyword)) return tab.id as TabId;
     }
   }
-  return "more";
+  // 没匹配上 → 默认丢到"营销内容包"(catch-all,因为媒体通稿之类都属于内容)
+  return "content";
 }
 
 function parseMarkdown(md: string): {
@@ -685,9 +696,9 @@ export default function ResultPage() {
       audience: 0,
       channel: 0,
       content: 0,
+      visual: 0,
       calendar: 0,
       data: 0,
-      more: 0,
     };
     if (parsed) {
       parsed.sections.forEach((s) => {
