@@ -1,5 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { SYSTEM_PROMPT } from "@/lib/system-prompt";
+import {
+  hashIp,
+  insertSubmission,
+  updateSubmission,
+} from "@/lib/supabase";
 
 // Vercel Pro 单函数最长 300 秒(5 分钟)。两阶段生成 + 联网搜索可能用到 2-3 分钟。
 export const maxDuration = 300;
@@ -12,10 +17,15 @@ type FormData = {
   content?: {
     copyright?: string;
     playName?: string;
+    playType?: string;
     [k: string]: unknown;
   };
   marketing?: {
     days?: string;
+    [k: string]: unknown;
+  };
+  show?: {
+    city?: string;
     [k: string]: unknown;
   };
   [k: string]: unknown;
@@ -24,6 +34,8 @@ type FormData = {
 /* ----------------- 主 handler ----------------- */
 
 export async function POST(request: Request) {
+  const startTime = Date.now();
+
   // 1. 解析表单数据
   let formData: FormData;
   try {
@@ -38,6 +50,22 @@ export async function POST(request: Request) {
   const copyright = formData.content?.copyright ?? "";
   const needsWebSearch = copyright === "改编" || copyright === "引进";
   const days = parseDays(formData.marketing?.days);
+
+  // 2. 收集匿名化的访客指纹 + 写一条 submission 记录(start 状态)
+  const ip =
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  const userAgent = (request.headers.get("user-agent") ?? "").slice(0, 500);
+
+  const submissionId = await insertSubmission({
+    ip_hash: hashIp(ip),
+    user_agent: userAgent,
+    form_data: formData,
+    play_name: formData.content?.playName ?? null,
+    play_type: formData.content?.playType ?? null,
+    copyright: copyright || null,
+    city: formData.show?.city ?? null,
+    status: "started",
+  });
 
   /* ----------------- Phase 1 messages ----------------- */
 
@@ -70,8 +98,11 @@ ${JSON.stringify(formData, null, 2)}
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      let totalOutput = "";
       let phase1Output = "";
-      let phase1FullyDone = false;
+      let phase1Done = false;
+      let finalStatus: "completed" | "partial" | "errored" = "errored";
+      let finalErrorMessage: string | null = null;
 
       // ===== Phase 1 =====
       try {
@@ -83,7 +114,7 @@ ${JSON.stringify(formData, null, 2)}
           cache_control: { type: "ephemeral" },
           system: SYSTEM_PROMPT,
           messages: [{ role: "user", content: phase1UserMessage }],
-          // 改编/引进 → 加 web_search 工具(server-side tool,Anthropic 自己跑)
+          // 改编/引进 → 加 web_search 工具(server-side tool)
           ...(needsWebSearch
             ? {
                 tools: [
@@ -104,31 +135,35 @@ ${JSON.stringify(formData, null, 2)}
           ) {
             const text = event.delta.text;
             phase1Output += text;
+            totalOutput += text;
             controller.enqueue(encoder.encode(text));
           }
         }
-        phase1FullyDone = true;
+        phase1Done = true;
       } catch (error) {
         console.error("[/api/generate phase1] error:", error);
-        // Phase 1 还没收到任何内容就崩了 → 客户端会看到空响应,客户端的 catch 会处理
-        // 如果有部分内容,客户端的 catch 会保留它(逻辑在 result page)
+        finalErrorMessage = error instanceof Error ? error.message : "unknown";
         try {
-          controller.enqueue(
-            encoder.encode(
-              `\n\n---\n\n⚠️ **生成中断**(Phase 1):${
-                error instanceof Error ? error.message : "unknown"
-              }\n\n方案不完整。请回输入页重新生成。`
-            )
-          );
+          const note = `\n\n---\n\n⚠️ **生成中断**(Phase 1):${finalErrorMessage}\n\n方案不完整。请回输入页重新生成。`;
+          totalOutput += note;
+          controller.enqueue(encoder.encode(note));
         } catch {
           /* ignore */
         }
         controller.close();
+        // 失败也要更新 submission
+        void updateSubmission(submissionId, {
+          status: "errored",
+          output_markdown: totalOutput || null,
+          output_length: totalOutput.length,
+          duration_ms: Date.now() - startTime,
+          error_message: finalErrorMessage,
+        });
         return;
       }
 
       // ===== Phase 2:营销排期日历 =====
-      if (phase1FullyDone && phase1Output.length > 500) {
+      if (phase1Done && phase1Output.length > 500) {
         try {
           const phase2Instructions = `现在请基于**上方已生成的 4 个 section 的具体内容**,以及用户的营销节奏 = **${days} 天**,生成 \`## ⑤ 营销排期日历\`。
 
@@ -168,35 +203,52 @@ ${JSON.stringify(formData, null, 2)}
             ],
           });
 
-          // Phase 2 输出前加个分隔符,让客户端 markdown 解析正确
-          controller.enqueue(encoder.encode("\n\n"));
+          // Phase 2 输出前加个空行分隔
+          const sep = "\n\n";
+          totalOutput += sep;
+          controller.enqueue(encoder.encode(sep));
 
           for await (const event of phase2Stream) {
             if (
               event.type === "content_block_delta" &&
               event.delta.type === "text_delta"
             ) {
-              controller.enqueue(encoder.encode(event.delta.text));
+              const text = event.delta.text;
+              totalOutput += text;
+              controller.enqueue(encoder.encode(text));
             }
           }
+          finalStatus = "completed";
         } catch (error) {
           console.error("[/api/generate phase2] error:", error);
-          // Phase 2 失败但 phase 1 已经发出去了,加一行降级提示
+          finalStatus = "partial";
+          finalErrorMessage = `Phase 2: ${
+            error instanceof Error ? error.message : "unknown"
+          }`;
           try {
-            controller.enqueue(
-              encoder.encode(
-                `\n\n---\n\n## ⑤ 营销排期日历\n\n⚠️ **本 section 生成中断**:${
-                  error instanceof Error ? error.message : "unknown"
-                }\n\n方案的前 4 个 section 已完整生成,你可以基于它们手动排期,或回输入页重新生成完整方案。`
-              )
-            );
+            const note = `\n\n---\n\n## ⑤ 营销排期日历\n\n⚠️ **本 section 生成中断**:${finalErrorMessage}\n\n方案的前 4 个 section 已完整生成,你可以基于它们手动排期,或回输入页重新生成完整方案。`;
+            totalOutput += note;
+            controller.enqueue(encoder.encode(note));
           } catch {
             /* ignore */
           }
         }
+      } else if (phase1Done) {
+        // Phase 1 完成但内容太短,跳过 phase 2
+        finalStatus = "partial";
+        finalErrorMessage = "phase 1 output too short, skipped phase 2";
       }
 
       controller.close();
+
+      // 异步写最终结果到 DB(fire and forget,不阻塞返回)
+      void updateSubmission(submissionId, {
+        status: finalStatus,
+        output_markdown: totalOutput || null,
+        output_length: totalOutput.length,
+        duration_ms: Date.now() - startTime,
+        error_message: finalErrorMessage,
+      });
     },
   });
 

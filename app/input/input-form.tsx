@@ -1689,17 +1689,24 @@ export function InputForm() {
               </div>
             </div>
 
-            {/* 填写提示 → 红框(珊瑚橙)+ 数据安全置顶 */}
+            {/* 公测期数据使用说明(诚实告知:我们会保存,但不公开/不训练/不分享) */}
             <div className="rounded-2xl border-2 border-accent-coral/45 bg-white p-5">
               <p className="flex items-center gap-2 text-sm font-semibold text-accent-coral">
                 <span className="flex h-6 w-6 items-center justify-center rounded-full bg-accent-coral/15">
                   <ShieldCheck className="h-3.5 w-3.5" />
                 </span>
-                数据安全
+                公测期 · 数据使用说明
               </p>
               <p className="mt-2.5 text-sm font-medium leading-relaxed text-ink">
-                我们不会存储或泄漏您填写的任何剧目信息和创作内容。本次生成结果仅供您查看与下载。
+                公测期间,我们会保存您填写的剧目信息和生成的方案,
+                <strong>仅用于产品迭代与质量分析</strong>。
               </p>
+              <ul className="mt-2.5 space-y-1 text-xs leading-relaxed text-ink-soft">
+                <li>· 不对外公开您的输入和方案</li>
+                <li>· 不用于任何 AI 模型训练(Anthropic API 也不训练)</li>
+                <li>· 不分享给任何第三方</li>
+                <li>· 正式版上线后,您可以选择关闭此收集</li>
+              </ul>
               <p className="mt-3 text-xs leading-relaxed text-ink-mute">
                 每个维度都影响方案质量:「内容」决定受众画像 / 「演出」决定投放渠道 / 「受众」决定文案语气 / 「商业目标」决定预算分配 / 「营销规划」决定整套节奏。
               </p>
