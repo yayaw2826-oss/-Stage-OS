@@ -108,7 +108,9 @@ ${JSON.stringify(formData, null, 2)}
       try {
         const phase1Stream = client.messages.stream({
           model: "claude-opus-4-7",
-          max_tokens: 8000,
+          // 10000 token 给 Hero(短)+ ① 受众 + ② 渠道 + ③ 内容包 + ④ 视觉语言建议 留足空间
+          // 之前 8000 在长 Hero 的情况下会撑爆,导致 ④ 视觉语言建议被截断
+          max_tokens: 10000,
           thinking: { type: "adaptive" },
           output_config: { effort: "high" },
           cache_control: { type: "ephemeral" },
