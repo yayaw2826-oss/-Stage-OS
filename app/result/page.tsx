@@ -54,12 +54,11 @@ const TABS = [
       "内容包",
       "营销内容包",
       "小红书",
-      "内容",
+      "标题钩子",
+      "卖点弹药",
+      "卖点",
       "种草",
       "文案包",
-      "媒体通稿",
-      "通稿",
-      "媒体",
       "slogan",
       "宣传语",
       "话术",
@@ -136,12 +135,21 @@ type FormDataShape = {
    ============================================================ */
 
 function matchTabByTitle(title: string): TabId {
+  // 排期 / 日历信号最高优先 —— 任何带排期/日历/T-XX/W-XX/周次的标题强制进"营销排期日历",
+  // 避免被内容包的关键词误抓(排期只属于日历)
+  if (
+    /排期|日历|时间表|时间线|时间轴|倒计时|周次|营销节奏|T\s*[-‑]?\s*\d|W\s*[-‑]?\s*\d|[TW]\s*[+]\s*\d/i.test(
+      title
+    )
+  ) {
+    return "calendar";
+  }
   for (const tab of TABS) {
     for (const keyword of tab.keywords) {
       if (title.includes(keyword)) return tab.id as TabId;
     }
   }
-  // 没匹配上 → 默认丢到"营销内容包"(catch-all,因为媒体通稿之类都属于内容)
+  // 没匹配上 → 默认丢到"内容包"(catch-all)
   return "content";
 }
 
